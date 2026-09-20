@@ -91,7 +91,20 @@ const GlobalStyle = () => (
 
 /* -------------------------------- UTILITIES -------------------------------- */
 
-const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+// Every id this app generates goes into a Postgres `uuid` column (see
+// schema.sql), so it has to be a real UUID — not just any unique string.
+// crypto.randomUUID() is available in every evergreen browser over HTTPS;
+// the fallback below only kicks in for very old browsers.
+const uid = () => {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+};
 
 const pad2 = (n) => String(n).padStart(2, "0");
 
