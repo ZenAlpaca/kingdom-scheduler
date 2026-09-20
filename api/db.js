@@ -40,6 +40,7 @@ const ALLOWED_TABLES = new Set([
 // frontend nor schema.sql has to compromise on naming.
 const FIELD_ALIASES = {
   shifts: { start: "start_time", end: "end_time" },
+  availability: { from: "from_time", until: "until_time" },
 };
 
 // Tables that have a real-world uniqueness rule *other than* their id
