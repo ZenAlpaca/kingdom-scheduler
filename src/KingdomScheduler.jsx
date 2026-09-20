@@ -2200,16 +2200,24 @@ function AppInner() {
   /* ---- handlers that also persist to Supabase (best-effort) ---- */
 
   const submitAvailability = async (entries) => {
-    const rows = entries.map((e) => ({
-      id: uid(),
-      userId: currentUser.id,
-      date: e.date,
-      available: e.available,
-      allDay: e.allDay,
-      from: e.from,
-      until: e.until,
-      notes: e.notes,
-    }));
+    // Reuse the id of any availability row this person already has for a
+    // given date, so a resubmission updates that row instead of minting a
+    // new id that collides with the table's one-row-per-person-per-date
+    // rule (the server also enforces this — see CONFLICT_TARGETS in
+    // api/db.js — but matching ids here keeps the local state consistent).
+    const rows = entries.map((e) => {
+      const existing = availability.find((a) => a.userId === currentUser.id && a.date === e.date);
+      return {
+        id: existing?.id || uid(),
+        userId: currentUser.id,
+        date: e.date,
+        available: e.available,
+        allDay: e.allDay,
+        from: e.from,
+        until: e.until,
+        notes: e.notes,
+      };
+    });
     setAvailability((prev) => [...prev.filter((a) => !(a.userId === currentUser.id && entries.some((e) => e.date === a.date))), ...rows]);
     await dbWrite("UPSERT", "availability", { rows });
     toast(t("availabilitySubmitted"));
