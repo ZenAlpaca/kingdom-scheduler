@@ -1830,14 +1830,18 @@ const SetupPage = ({ departments, setDepartments, users, setUsers }) => {
     reader.onload = async () => {
       const lines = String(reader.result).split(/\r?\n/).filter(Boolean);
       const [, ...rows] = lines; // skip header
-      const preservedOwnersManagers = users.filter((u) => u.isOwner || u.isManager);
-      const imported = rows.map((line) => {
+      const importedRows = rows.map((line) => {
         const [name, pin, phone, deptStr, manager, owner] = line.split(",");
         const deptIds = (deptStr || "").split("|").filter(Boolean).map((n) => departments.find((d) => d.name === n.trim())?.id).filter(Boolean);
-        const existing = preservedOwnersManagers.find((u) => u.name.toLowerCase() === (name || "").toLowerCase());
+        const cleanName = (name || "").trim();
+        // Match against everyone currently in the system (not just
+        // owners/managers) so re-importing the same sheet updates existing
+        // people in place instead of minting a new id — a new id would
+        // leave their old row behind in Supabase as an orphaned duplicate.
+        const existing = users.find((u) => u.name.toLowerCase() === cleanName.toLowerCase());
         return {
           id: existing?.id || uid(),
-          name: (name || "").trim(),
+          name: cleanName,
           pin: (pin || "").trim(),
           phone: (phone || "").trim(),
           depts: deptIds,
@@ -1845,8 +1849,24 @@ const SetupPage = ({ departments, setDepartments, users, setUsers }) => {
           isOwner: existing ? existing.isOwner : (owner || "").trim().toLowerCase() === "yes",
         };
       });
-      setUsers(imported);
-      await dbWrite("UPSERT", "users", { rows: imported });
+
+      // The sheet is meant to be the whole roster, but an owner/manager left
+      // off it by mistake shouldn't vanish (that could be your own login).
+      // Keep any such account that the sheet didn't already match.
+      const importedNames = new Set(importedRows.map((u) => u.name.toLowerCase()));
+      const keptAccounts = users.filter((u) => (u.isOwner || u.isManager) && !importedNames.has(u.name.toLowerCase()));
+      const finalRoster = [...importedRows, ...keptAccounts];
+
+      // Actually replace: anyone currently in Supabase who isn't in the
+      // final roster gets removed, not just left behind.
+      const finalIds = new Set(finalRoster.map((u) => u.id));
+      const removedIds = users.filter((u) => !finalIds.has(u.id)).map((u) => u.id);
+
+      setUsers(finalRoster);
+      if (removedIds.length > 0) {
+        await dbWrite("DELETE", "users", { match: { id: removedIds } });
+      }
+      await dbWrite("UPSERT", "users", { rows: finalRoster });
       toast(t("importCsv"));
     };
     reader.readAsText(file);
