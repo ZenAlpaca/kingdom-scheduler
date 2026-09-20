@@ -1509,28 +1509,24 @@ const ScheduleBuilder = ({ users, shifts, setShifts, showDays, doorsClose, setDo
                 <Card key={date} style={{ padding: 10 }}>
                   <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 13.5, marginBottom: 8 }}>{formatShort(parseISODate(date), lang)}</div>
                   <div style={{ display: "flex", gap: 6 }}>
-                    <input
-                      type="time"
-                      value={dc.doors || ""}
-                      onChange={(e) => setDoorsClose((prev) => ({ ...prev, [date]: { ...prev[date], doors: e.target.value } }))}
-                      style={{ flex: 1, background: COLORS.bgRaised, border: `1px solid ${COLORS.borderLight}`, borderRadius: 8, padding: "6px 8px", color: COLORS.text, fontSize: 12.5 }}
-                    />
-                    <select
-                      value={dc.close === "CLOSE" ? "CLOSE" : "time"}
-                      onChange={(e) => setDoorsClose((prev) => ({ ...prev, [date]: { ...prev[date], close: e.target.value === "CLOSE" ? "CLOSE" : "" } }))}
-                      style={{ background: COLORS.bgRaised, border: `1px solid ${COLORS.borderLight}`, borderRadius: 8, color: COLORS.text, fontSize: 12.5 }}
-                    >
-                      <option value="time">Time</option>
-                      <option value="CLOSE">CLOSE</option>
-                    </select>
-                    {dc.close !== "CLOSE" && (
+                    <label style={{ flex: 1, display: "flex", flexDirection: "column", gap: 3 }}>
+                      <span style={{ fontSize: 10, color: COLORS.textFaint }}>{t("doors")}</span>
+                      <input
+                        type="time"
+                        value={dc.doors || ""}
+                        onChange={(e) => setDoorsClose((prev) => ({ ...prev, [date]: { ...prev[date], doors: e.target.value } }))}
+                        style={{ background: COLORS.bgRaised, border: `1px solid ${COLORS.borderLight}`, borderRadius: 8, padding: "6px 8px", color: COLORS.text, fontSize: 12.5 }}
+                      />
+                    </label>
+                    <label style={{ flex: 1, display: "flex", flexDirection: "column", gap: 3 }}>
+                      <span style={{ fontSize: 10, color: COLORS.textFaint }}>{t("close")}</span>
                       <input
                         type="time"
                         value={dc.close || ""}
                         onChange={(e) => setDoorsClose((prev) => ({ ...prev, [date]: { ...prev[date], close: e.target.value } }))}
-                        style={{ flex: 1, background: COLORS.bgRaised, border: `1px solid ${COLORS.borderLight}`, borderRadius: 8, padding: "6px 8px", color: COLORS.text, fontSize: 12.5 }}
+                        style={{ background: COLORS.bgRaised, border: `1px solid ${COLORS.borderLight}`, borderRadius: 8, padding: "6px 8px", color: COLORS.text, fontSize: 12.5 }}
                       />
-                    )}
+                    </label>
                   </div>
                 </Card>
               );
@@ -1585,25 +1581,23 @@ const ScheduleBuilder = ({ users, shifts, setShifts, showDays, doorsClose, setDo
                                   onChange={(e) => updateShift(u.id, dept.id, date, { start: e.target.value, end: shift?.end || "" })}
                                   style={{ width: "50%", background: COLORS.bgRaised, border: `1px solid ${COLORS.borderLight}`, borderRadius: 6, padding: "4px 6px", color: COLORS.text, fontSize: 11.5 }}
                                 />
-                                <select
-                                  disabled={shift?.onCall}
-                                  value={shift?.end === "CLOSE" ? "CLOSE" : shift?.end ? "time" : ""}
-                                  onChange={(e) => updateShift(u.id, dept.id, date, { end: e.target.value === "CLOSE" ? "CLOSE" : "" })}
-                                  style={{ width: "50%", background: COLORS.bgRaised, border: `1px solid ${COLORS.borderLight}`, borderRadius: 6, color: COLORS.text, fontSize: 11 }}
-                                >
-                                  <option value="">–</option>
-                                  <option value="time">Time</option>
-                                  <option value="CLOSE">CLOSE</option>
-                                </select>
-                              </div>
-                              {shift?.end && shift.end !== "CLOSE" && (
                                 <input
                                   type="time"
-                                  value={shift.end}
+                                  disabled={shift?.onCall || shift?.end === "CLOSE"}
+                                  value={shift?.end === "CLOSE" ? "" : shift?.end || ""}
                                   onChange={(e) => updateShift(u.id, dept.id, date, { end: e.target.value })}
-                                  style={{ background: COLORS.bgRaised, border: `1px solid ${COLORS.borderLight}`, borderRadius: 6, padding: "4px 6px", color: COLORS.text, fontSize: 11.5 }}
+                                  style={{ width: "50%", background: COLORS.bgRaised, border: `1px solid ${COLORS.borderLight}`, borderRadius: 6, padding: "4px 6px", color: COLORS.text, fontSize: 11.5, opacity: shift?.end === "CLOSE" ? 0.4 : 1 }}
                                 />
-                              )}
+                              </div>
+                              <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, color: COLORS.textDim }}>
+                                <input
+                                  type="checkbox"
+                                  disabled={shift?.onCall}
+                                  checked={shift?.end === "CLOSE"}
+                                  onChange={(e) => updateShift(u.id, dept.id, date, { end: e.target.checked ? "CLOSE" : "" })}
+                                />
+                                {t("close")}
+                              </label>
                               <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, color: COLORS.yellow }}>
                                 <input
                                   type="checkbox"
