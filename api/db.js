@@ -42,6 +42,14 @@ const FIELD_ALIASES = {
   shifts: { start: "start_time", end: "end_time" },
 };
 
+// Tables that have a real-world uniqueness rule *other than* their id
+// column (see the `unique(...)` constraints in schema.sql). An upsert
+// needs to know this so a resubmission — same person, same date — updates
+// the existing row instead of colliding with it under a fresh id.
+const CONFLICT_TARGETS = {
+  availability: "user_id,date",
+};
+
 const camelToSnake = (s) => s.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`);
 const snakeToCamel = (s) => s.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
 
@@ -130,7 +138,11 @@ export default async function handler(req, res) {
             return res.status(200).json({ data });
           }
           const dbRows = (rows || []).map((r) => toDbRow(table, r));
-          const { data, error } = await supabase.from(table).upsert(dbRows).select();
+          const conflictTarget = CONFLICT_TARGETS[table];
+          const query = conflictTarget
+            ? supabase.from(table).upsert(dbRows, { onConflict: conflictTarget })
+            : supabase.from(table).upsert(dbRows);
+          const { data, error } = await query.select();
           if (error) throw error;
           return res.status(200).json({ data: (data || []).map((row) => fromDbRow(table, row)) });
         }
