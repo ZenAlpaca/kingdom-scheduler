@@ -47,6 +47,13 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
+  // If a CRON_SECRET environment variable is set, Vercel's scheduler sends it
+  // along automatically, and everyone else is turned away — otherwise anyone
+  // who found this URL could trigger a Telegram message whenever they liked.
+  if (process.env.CRON_SECRET && req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
   try {
     const { data: stateRows, error: stateErr } = await supabase
       .from("app_state")
