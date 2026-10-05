@@ -148,6 +148,9 @@ export default async function handler(req, res) {
           return res.status(200).json({ data: (data || []).map((row) => fromDbRow(table, row)) });
         }
         case "PATCH": {
+          if (!match || Object.keys(match).length === 0) {
+            return res.status(400).json({ error: "PATCH needs a match filter" });
+          }
           let query = supabase.from(table).update(toDbRow(table, patch || {}));
           query = applyMatch(query, toDbMatch(table, match || {}));
           const { data, error } = await query.select();
@@ -155,6 +158,10 @@ export default async function handler(req, res) {
           return res.status(200).json({ data: (data || []).map((row) => fromDbRow(table, row)) });
         }
         case "DELETE": {
+          // Refuse an unfiltered delete — it would wipe the whole table.
+          if (!match || Object.keys(match).length === 0) {
+            return res.status(400).json({ error: "DELETE needs a match filter" });
+          }
           let query = supabase.from(table).delete();
           query = applyMatch(query, toDbMatch(table, match || {}));
           const { data, error } = await query.select();
