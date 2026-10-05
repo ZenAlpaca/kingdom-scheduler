@@ -56,10 +56,10 @@ create table if not exists availability (
 create table if not exists giveup_requests (
   id uuid primary key default uuid_generate_v4(),
   shift_id uuid references shifts(id) on delete cascade,
-  from_user_id uuid references users(id),
+  from_user_id uuid references users(id) on delete cascade,
   note text,
   status text not null default 'open', -- open | claimed | cancelled
-  claimed_by uuid references users(id),
+  claimed_by uuid references users(id) on delete set null,
   created_at timestamptz not null default now()
 );
 
@@ -77,7 +77,7 @@ create table if not exists time_off_requests (
 -- Generic notification log (mirrors what was sent to Telegram, for in-app history).
 create table if not exists notifications (
   id uuid primary key default uuid_generate_v4(),
-  user_id uuid references users(id),
+  user_id uuid references users(id) on delete cascade,
   message text not null,
   read boolean not null default false,
   created_at timestamptz not null default now()
@@ -96,16 +96,20 @@ insert into app_state (key, value) values
   ('doors_close', '{}')
 on conflict (key) do nothing;
 
--- Seed default departments (safe to skip if you already added your own).
-insert into departments (name, color, sort_order) values
+-- Seed default departments — only if the table is empty, so re-running this
+-- file never adds duplicates.
+insert into departments (name, color, sort_order)
+select * from (values
   ('Box Office', '#a855f7', 0),
   ('Security', '#3b82f6', 1),
   ('Lighting Director', '#eab308', 2),
   ('Bartender', '#f97316', 3),
   ('Barback', '#22c55e', 4)
-on conflict do nothing;
+) as seed(name, color, sort_order)
+where not exists (select 1 from departments);
 
--- Seed one owner account so you can log in the first time. CHANGE THE PIN.
-insert into users (name, pin, depts, is_manager, is_owner) values
-  ('Owner', '1234', '[]', true, true)
-on conflict do nothing;
+-- Seed one owner account so you can log in the first time — only if there are
+-- no users yet. CHANGE THE PIN after you log in.
+insert into users (name, pin, depts, is_manager, is_owner)
+select 'Owner', '1234', '[]'::jsonb, true, true
+where not exists (select 1 from users);
