@@ -1770,6 +1770,11 @@ const ScheduleBuilder = ({ users, shifts, setShifts, showDays, doorsClose, setDo
                                   {avail.available ? (avail.allDay ? t("allDay") : `${formatTime12(avail.from)}–${formatTime12(avail.until)}`) : t("notAvailable")}
                                 </div>
                               )}
+                              {avail?.notes && avail.notes.trim() && (
+                                <div title={avail.notes} style={{ fontSize: 10.5, color: COLORS.textDim, fontStyle: "italic", lineHeight: 1.35, background: "rgba(255,255,255,0.04)", borderRadius: 6, padding: "4px 6px", wordBreak: "break-word" }}>
+                                  “{avail.notes}”
+                                </div>
+                              )}
                               <div style={{ display: "flex", gap: 4 }}>
                                 <TimeInput
                                   size="sm"
