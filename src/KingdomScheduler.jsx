@@ -1933,6 +1933,11 @@ const AvailabilityAdmin = ({ users, availability, showDays }) => {
                   </Badge>
                 ))}
               </div>
+              {entries.filter((e) => e.notes && e.notes.trim()).map((e) => (
+                <div key={`note-${e.date}`} style={{ marginTop: 8, fontSize: 12.5, color: COLORS.textDim, lineHeight: 1.4 }}>
+                  <span style={{ fontWeight: 700, color: COLORS.text }}>{formatShort(parseISODate(e.date), lang)}:</span> {e.notes}
+                </div>
+              ))}
             </Card>
           );
         })}
