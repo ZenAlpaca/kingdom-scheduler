@@ -160,6 +160,16 @@ const timeOverlaps = (aFrom, aUntil, bFrom, bUntil) => {
   return a1 < b2 && b1 < a2;
 };
 
+// Departments in the order the owner arranged them (Setup tab). Ties — which
+// only happen for departments added before ordering existed — fall back to
+// the order they were created in, so the list never shuffles between loads.
+const sortDepartments = (list) =>
+  [...list].sort(
+    (a, b) =>
+      (a.sortOrder ?? 0) - (b.sortOrder ?? 0) ||
+      String(a.createdAt || "").localeCompare(String(b.createdAt || ""))
+  );
+
 // "14:30" -> "2:30 PM". Leaves "CLOSE" and empty values untouched — those
 // are handled by their callers. Times are stored/edited in 24-hour form
 // (that's what <input type="time"> needs) but always *displayed* in
@@ -332,6 +342,18 @@ const translations = {
     optional: "optional",
     selectWeeks: "Select the weeks you're submitting for",
     you: "you",
+    start: "Start",
+    end: "End",
+    deptOrderHint: "Drag the handle to reorder. This order is used on the schedule, the builder and here.",
+    moveUp: "Move up",
+    moveDown: "Move down",
+    reorder: "Reorder",
+    saveFailed: "That change didn't save. Refresh the page to see what's actually saved.",
+    loadFailed: "Couldn't load the schedule data.",
+    loadFailedHelp: "Check your connection and try again. If it keeps happening, check the project's function logs.",
+    retry: "Try again",
+    reviewTab: "Who submitted",
+    myAvailabilityTab: "My availability",
   },
   es: {
     appName: "Kingdom Scheduler",
@@ -449,6 +471,18 @@ const translations = {
     optional: "opcional",
     selectWeeks: "Selecciona las semanas para las que env\u00edas",
     you: "t\u00fa",
+    start: "Inicio",
+    end: "Fin",
+    deptOrderHint: "Arrastra el control para reordenar. Este orden se usa en el horario, el constructor y aqu\u00ed.",
+    moveUp: "Subir",
+    moveDown: "Bajar",
+    reorder: "Reordenar",
+    saveFailed: "Ese cambio no se guard\u00f3. Actualiza la p\u00e1gina para ver lo que realmente se guard\u00f3.",
+    loadFailed: "No se pudieron cargar los datos del horario.",
+    loadFailedHelp: "Revisa tu conexi\u00f3n e int\u00e9ntalo de nuevo. Si sigue pasando, revisa los registros de funciones del proyecto.",
+    retry: "Intentar de nuevo",
+    reviewTab: "Qui\u00e9n envi\u00f3",
+    myAvailabilityTab: "Mi disponibilidad",
   },
 };
 
@@ -474,34 +508,54 @@ const useDepts = () => {
 
 /* ------------------------------ BACKEND HELPERS ----------------------------- */
 
-let DEMO_MODE = false; // flips true the first time a /api/db call fails
+// True only while running locally (`npm run dev`) with no /api/db to talk to.
+// The deployed site never swaps in demo data: if the database can't be reached
+// it says so, rather than showing made-up staff that nothing can be saved to.
+let DEMO_MODE = false;
 
-async function dbSelect(table) {
+// AppInner points this at the toast so a failed save is never silent.
+let onDbError = () => {};
+
+async function readError(res) {
   try {
-    const res = await fetch(`/api/db?table=${encodeURIComponent(table)}`);
-    if (!res.ok) throw new Error(`db select ${table} failed`);
-    const { data } = await res.json();
-    return data;
+    const body = await res.json();
+    return body.error || `HTTP ${res.status}`;
   } catch (e) {
-    DEMO_MODE = true;
-    return null; // caller falls back to demo seed
+    return `HTTP ${res.status}`;
   }
 }
 
+// Throws if the request fails — the caller decides what to do about it.
+async function dbSelect(table) {
+  const res = await fetch(`/api/db?table=${encodeURIComponent(table)}`);
+  if (!res.ok) throw new Error(`Couldn't load ${table}: ${await readError(res)}`);
+  const { data } = await res.json();
+  return data;
+}
+
+// Returns the response on success and null on failure (after telling the
+// user). Callers that need to undo an on-screen change check for null.
 async function dbWrite(operation, table, payload) {
+  if (DEMO_MODE) return { data: [] }; // local preview: nothing to save to
   try {
     const res = await fetch("/api/db", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-operation": operation },
       body: JSON.stringify({ table, ...payload }),
     });
-    if (!res.ok) throw new Error(`db ${operation} ${table} failed`);
+    if (!res.ok) throw new Error(await readError(res));
     return await res.json();
   } catch (e) {
-    DEMO_MODE = true;
+    console.error(`Save failed (${operation} ${table}):`, e);
+    onDbError(e);
     return null;
   }
 }
+
+// Telegram messages are sent as HTML, so anything a person typed (names, notes,
+// reasons) must be escaped or a stray "<" or "&" makes Telegram reject the message.
+const escapeHtml = (value) =>
+  String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 async function sendTelegram(message) {
   try {
@@ -584,6 +638,7 @@ const Icon = ({ name, size = 20, color = "currentColor" }) => {
     case "users": return <svg {...p}><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 00-3-3.9M16 3.1a4 4 0 010 7.8" /></svg>;
     case "upload": return <svg {...p}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12" /></svg>;
     case "download": return <svg {...p}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" /></svg>;
+    case "grip": return <svg {...p} strokeWidth={2.4}><circle cx="9" cy="6" r=".6" /><circle cx="15" cy="6" r=".6" /><circle cx="9" cy="12" r=".6" /><circle cx="15" cy="12" r=".6" /><circle cx="9" cy="18" r=".6" /><circle cx="15" cy="18" r=".6" /></svg>;
     case "info": return <svg {...p}><circle cx="12" cy="12" r="9" /><path d="M12 16v-5M12 8h.01" /></svg>;
     default: return null;
   }
@@ -1448,7 +1503,6 @@ const ShiftSwapsView = ({ currentUser, shifts, giveups, users, departments, onPo
     (g) => g.status === "open" && g.fromUserId !== currentUser.id && myDeptIds.includes(shifts.find((s) => s.id === g.shiftId)?.deptId)
   );
   const waiting = giveups.filter((g) => g.status === "open" && g.fromUserId === currentUser.id);
-  const mine = giveups.filter((g) => g.fromUserId === currentUser.id || g.claimedBy === currentUser.id);
 
   const [sheetShift, setSheetShift] = useState(null);
   const [note, setNote] = useState("");
@@ -1588,13 +1642,26 @@ const ScheduleBuilder = ({ users, shifts, setShifts, showDays, doorsClose, setDo
   };
 
   const publish = async () => {
+    if (weekShowDays.length === 0) return;
     setPublishing(true);
     try {
-      // Replace this week's shifts: delete old ones for these dates, then insert the new set.
-      await dbWrite("DELETE", "shifts", { match: { date: weekShowDays } });
-      const toInsert = pending.filter((s) => weekShowDays.includes(s.date) && (s.userId));
-      await dbWrite("INSERT", "shifts", { rows: toInsert });
-      setShifts((prev) => [...prev.filter((s) => !weekShowDays.includes(s.date)), ...toInsert]);
+      // A shift only counts once it has a start time or is marked ON CALL —
+      // a row created by just clicking a box shouldn't publish as a blank shift.
+      const weekShifts = pending.filter((s) => weekShowDays.includes(s.date) && s.userId && (s.onCall || s.start));
+      const keepIds = new Set(weekShifts.map((s) => s.id));
+      const staleIds = shifts.filter((s) => weekShowDays.includes(s.date) && !keepIds.has(s.id)).map((s) => s.id);
+
+      // Save the new set first, then remove the shifts that were taken out.
+      // If saving fails nothing has been deleted, so the old schedule is intact.
+      if (weekShifts.length > 0) {
+        const saved = await dbWrite("UPSERT", "shifts", { rows: weekShifts });
+        if (!saved) return;
+      }
+      if (staleIds.length > 0) {
+        const removed = await dbWrite("DELETE", "shifts", { match: { id: staleIds } });
+        if (!removed) return;
+      }
+      setShifts((prev) => [...prev.filter((s) => !weekShowDays.includes(s.date)), ...weekShifts]);
       await sendTelegram(`📋 <b>Schedule published</b> for ${formatRange(weekStart, addDays(weekStart, 6), lang)}.`);
       toast(t("published"));
     } finally {
@@ -1706,7 +1773,7 @@ const ScheduleBuilder = ({ users, shifts, setShifts, showDays, doorsClose, setDo
                               <div style={{ display: "flex", gap: 4 }}>
                                 <TimeInput
                                   size="sm"
-                                  placeholder="Start"
+                                  placeholder={t("start")}
                                   ariaLabel={`${u.name} start`}
                                   disabled={shift?.onCall}
                                   value={shift?.start || ""}
@@ -1714,7 +1781,7 @@ const ScheduleBuilder = ({ users, shifts, setShifts, showDays, doorsClose, setDo
                                 />
                                 <TimeInput
                                   size="sm"
-                                  placeholder="End"
+                                  placeholder={t("end")}
                                   ariaLabel={`${u.name} end`}
                                   disabled={shift?.onCall || shift?.end === "CLOSE"}
                                   dim={shift?.end === "CLOSE"}
@@ -1841,6 +1908,9 @@ const AvailabilityAdmin = ({ users, availability, showDays }) => {
       <div style={{ fontFamily: FONT_DISPLAY, fontSize: 18, fontWeight: 600 }}>{t("availabilityAdminTitle")}</div>
       <WeekNav weekStart={weekStart} onChange={setWeekStart} />
 
+      {weekShowDays.length === 0 && <EmptyState icon="calendar" title={t("noShowDaysWeek")} />}
+
+      {weekShowDays.length > 0 && (<>
       <Section title={`${t("notSubmittedSection")} (${notSubmitted.length})`}>
         {notSubmitted.map((u) => (
           <div key={u.id} style={{ padding: "10px 12px", background: COLORS.redDim, border: "1px solid rgba(239,68,68,0.3)", borderRadius: 10, marginBottom: 8, fontSize: 13.5, fontWeight: 600 }}>
@@ -1867,6 +1937,44 @@ const AvailabilityAdmin = ({ users, availability, showDays }) => {
           );
         })}
       </Section>
+      </>)}
+    </div>
+  );
+};
+
+// Owners and managers get both: a review of who has submitted, and their own form.
+const AvailabilityHub = ({ users, availability, showDays, currentUser, doorsClose, onSubmit }) => {
+  const t = useT();
+  const [view, setView] = useState("review"); // review | mine
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      <div style={{ display: "flex", gap: 6, background: COLORS.bgCard, padding: 4, borderRadius: 999, border: `1px solid ${COLORS.border}`, alignSelf: "flex-start" }}>
+        {[
+          ["review", t("reviewTab")],
+          ["mine", t("myAvailabilityTab")],
+        ].map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setView(key)}
+            style={{
+              padding: "8px 16px",
+              borderRadius: 999,
+              border: "none",
+              fontSize: 13,
+              fontWeight: 600,
+              background: view === key ? COLORS.accent : "transparent",
+              color: view === key ? "#150c04" : COLORS.textDim,
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {view === "review" ? (
+        <AvailabilityAdmin users={users} availability={availability} showDays={showDays} />
+      ) : (
+        <AvailabilityView currentUser={currentUser} showDays={showDays} doorsClose={doorsClose} availability={availability} onSubmit={onSubmit} />
+      )}
     </div>
   );
 };
@@ -1909,31 +2017,112 @@ const SetupPage = ({ departments, setDepartments, users, setUsers }) => {
   const [csvOpen, setCsvOpen] = useState(false);
   const fileInputRef = useRef(null);
 
+  /* ---- department order: drag the grip (mouse or finger), or use ↑ ↓ on it ---- */
+  const [dragId, setDragId] = useState(null);
+  const rowRefs = useRef({});
+  const deptsRef = useRef(departments);
+  deptsRef.current = departments; // always the latest list, for the drag listeners
+  const dragStart = useRef(null); // the order when the drag began, to undo if saving fails
+
+  const moveDept = (from, to) =>
+    setDepartments((prev) => {
+      const next = [...prev];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+
+  // Writes the current order to the database (sort_order = position in the list).
+  const saveOrder = async (ordered, before) => {
+    const numbered = ordered.map((d, i) => ({ ...d, sortOrder: i }));
+    setDepartments(numbered);
+    const rows = numbered.map((d) => ({ id: d.id, name: d.name, color: d.color, sortOrder: d.sortOrder }));
+    const res = await dbWrite("UPSERT", "departments", { rows });
+    if (!res) setDepartments(before);
+  };
+
+  const keyboardMove = (from, to) => {
+    const before = deptsRef.current;
+    const next = [...before];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    saveOrder(next, before);
+  };
+
+  useEffect(() => {
+    if (!dragId) return undefined;
+    const onMove = (e) => {
+      const list = deptsRef.current;
+      // Where should the dragged row sit? After every *other* row whose
+      // midpoint is above the pointer.
+      let target = 0;
+      for (const d of list) {
+        if (d.id === dragId) continue;
+        const el = rowRefs.current[d.id];
+        if (!el) continue;
+        const r = el.getBoundingClientRect();
+        if (e.clientY > r.top + r.height / 2) target += 1;
+      }
+      const from = list.findIndex((d) => d.id === dragId);
+      if (from !== -1 && target !== from) moveDept(from, target);
+    };
+    const onEnd = () => {
+      setDragId(null);
+      const before = dragStart.current;
+      const now = deptsRef.current;
+      if (before && before.map((d) => d.id).join() !== now.map((d) => d.id).join()) {
+        saveOrder(now, before);
+      }
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onEnd);
+    window.addEventListener("pointercancel", onEnd);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onEnd);
+      window.removeEventListener("pointercancel", onEnd);
+    };
+  }, [dragId]);
+
   const addDept = async () => {
     if (!newDeptName.trim()) return;
-    const dept = { id: uid(), name: newDeptName.trim(), color: COLORS.blue };
+    const dept = { id: uid(), name: newDeptName.trim(), color: COLORS.blue, sortOrder: departments.length };
+    const before = departments;
     setDepartments((prev) => [...prev, dept]);
-    await dbWrite("INSERT", "departments", { rows: [dept] });
+    const res = await dbWrite("INSERT", "departments", { rows: [dept] });
+    if (!res) {
+      setDepartments(before);
+      return;
+    }
     setNewDeptName("");
   };
 
   const removeDept = async (id) => {
     if (!window.confirm(t("confirmRemove"))) return;
+    const before = departments;
     setDepartments((prev) => prev.filter((d) => d.id !== id));
-    await dbWrite("DELETE", "departments", { match: { id } });
+    const res = await dbWrite("DELETE", "departments", { match: { id } });
+    if (!res) setDepartments(before); // the database refused — put it back
   };
 
   const recolorDept = async (id, color) => {
+    const before = departments;
     setDepartments((prev) => prev.map((d) => (d.id === id ? { ...d, color } : d)));
-    await dbWrite("PATCH", "departments", { match: { id }, patch: { color } });
+    const res = await dbWrite("PATCH", "departments", { match: { id }, patch: { color } });
+    if (!res) setDepartments(before);
   };
 
   const saveUser = async (user) => {
+    const before = users;
     setUsers((prev) => {
       const exists = prev.some((u) => u.id === user.id);
       return exists ? prev.map((u) => (u.id === user.id ? user : u)) : [...prev, user];
     });
-    await dbWrite("UPSERT", "users", { rows: [user] });
+    const res = await dbWrite("UPSERT", "users", { rows: [user] });
+    if (!res) {
+      setUsers(before); // keep the form open so nothing typed is lost
+      return;
+    }
     setEditingUser(null);
     setAddStaffOpen(false);
     toast(t("save"));
@@ -1941,8 +2130,10 @@ const SetupPage = ({ departments, setDepartments, users, setUsers }) => {
 
   const removeUser = async (id) => {
     if (!window.confirm(t("confirmRemove"))) return;
+    const before = users;
     setUsers((prev) => prev.filter((u) => u.id !== id));
-    await dbWrite("DELETE", "users", { match: { id } });
+    const res = await dbWrite("DELETE", "users", { match: { id } });
+    if (!res) setUsers(before); // the database refused — put them back
   };
 
   const exportCsv = () => {
@@ -1995,11 +2186,22 @@ const SetupPage = ({ departments, setDepartments, users, setUsers }) => {
       const finalIds = new Set(finalRoster.map((u) => u.id));
       const removedIds = users.filter((u) => !finalIds.has(u.id)).map((u) => u.id);
 
+      // Save the new roster first and remove people second: if a step fails
+      // you're left with a few extra rows to delete, never with people lost.
+      const before = users;
       setUsers(finalRoster);
-      if (removedIds.length > 0) {
-        await dbWrite("DELETE", "users", { match: { id: removedIds } });
+      const saved = await dbWrite("UPSERT", "users", { rows: finalRoster });
+      if (!saved) {
+        setUsers(before);
+        return;
       }
-      await dbWrite("UPSERT", "users", { rows: finalRoster });
+      if (removedIds.length > 0) {
+        const removed = await dbWrite("DELETE", "users", { match: { id: removedIds } });
+        if (!removed) {
+          setUsers([...finalRoster, ...before.filter((u) => removedIds.includes(u.id))]);
+          return;
+        }
+      }
       toast(t("importCsv"));
     };
     reader.readAsText(file);
@@ -2011,14 +2213,68 @@ const SetupPage = ({ departments, setDepartments, users, setUsers }) => {
 
       {/* Departments */}
       <Section title={t("departments")}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
-          {departments.map((d) => (
-            <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", background: COLORS.bgCard, border: `1px solid ${COLORS.border}`, borderRadius: 10 }}>
-              <SwatchPicker value={d.color} onChange={(c) => recolorDept(d.id, c)} />
-              <div style={{ flex: 1, fontSize: 13.5, fontWeight: 600 }}>{d.name}</div>
-              <IconButton name="trash" color={COLORS.textFaint} onClick={() => removeDept(d.id)} />
-            </div>
-          ))}
+        <div style={{ fontSize: 12.5, color: COLORS.textFaint, marginBottom: 10 }}>{t("deptOrderHint")}</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12, userSelect: "none" }}>
+          {departments.map((d, index) => {
+            const dragging = dragId === d.id;
+            return (
+              <div
+                key={d.id}
+                ref={(el) => {
+                  rowRefs.current[d.id] = el;
+                }}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "9px 12px",
+                  background: dragging ? COLORS.bgCardHover : COLORS.bgCard,
+                  border: `1px solid ${dragging ? COLORS.accentBorder : COLORS.border}`,
+                  borderRadius: 10,
+                  boxShadow: dragging ? "0 8px 24px rgba(0,0,0,0.45)" : "none",
+                  position: "relative",
+                  zIndex: dragging ? 2 : 1,
+                }}
+              >
+                <button
+                  className="ksn-focusable"
+                  aria-label={`${t("reorder")}: ${d.name}`}
+                  title={`${t("reorder")} (↑ ↓)`}
+                  onPointerDown={(e) => {
+                    if (e.button !== undefined && e.button !== 0) return;
+                    e.preventDefault();
+                    dragStart.current = departments;
+                    setDragId(d.id);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "ArrowUp" && index > 0) {
+                      e.preventDefault();
+                      keyboardMove(index, index - 1);
+                    } else if (e.key === "ArrowDown" && index < departments.length - 1) {
+                      e.preventDefault();
+                      keyboardMove(index, index + 1);
+                    }
+                  }}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: dragging ? COLORS.accent : COLORS.textFaint,
+                    padding: 4,
+                    margin: "-4px 0 -4px -6px",
+                    display: "flex",
+                    cursor: dragging ? "grabbing" : "grab",
+                    touchAction: "none", // lets a finger drag instead of scrolling the page
+                    borderRadius: 6,
+                  }}
+                >
+                  <Icon name="grip" size={18} />
+                </button>
+                <SwatchPicker value={d.color} onChange={(c) => recolorDept(d.id, c)} />
+                <div style={{ flex: 1, fontSize: 13.5, fontWeight: 600 }}>{d.name}</div>
+                <IconButton name="trash" color={COLORS.textFaint} onClick={() => removeDept(d.id)} />
+              </div>
+            );
+          })}
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <div style={{ flex: 1 }}>
@@ -2287,6 +2543,8 @@ function AppInner() {
   const isMobile = useIsMobile();
 
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [currentUser, setCurrentUser] = useState(null);
   const [activeTab, setActiveTab] = useState("schedule");
 
@@ -2299,43 +2557,65 @@ function AppInner() {
   const [timeOff, setTimeOff] = useState([]);
   const [giveups, setGiveups] = useState([]);
 
+  // A failed save should never be silent (see dbWrite).
   useEffect(() => {
-    (async () => {
-      const [u, d, s, av, to, gu, showDaysState, doorsCloseState] = await Promise.all([
-        dbSelect("users"),
-        dbSelect("departments"),
-        dbSelect("shifts"),
-        dbSelect("availability"),
-        dbSelect("time_off_requests"),
-        dbSelect("giveup_requests"),
-        dbSelect("app_state"),
-        Promise.resolve(null),
-      ]);
+    onDbError = () => toast(t("saveFailed"), "error");
+    return () => {
+      onDbError = () => {};
+    };
+  }, [toast, t]);
 
-      if (DEMO_MODE) {
-        setUsers(DEMO_USERS);
-        setDepartments(DEMO_DEPARTMENTS);
-        setShowDays(DEMO_SHOW_DAYS);
-        setDoorsClose(DEMO_DOORS_CLOSE);
-        setShifts(DEMO_SHIFTS);
-        setAvailability([]);
-        setTimeOff([]);
-        setGiveups([]);
-      } else {
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setLoadError(null);
+      try {
+        const [u, d, s, av, to, gu, appState] = await Promise.all([
+          dbSelect("users"),
+          dbSelect("departments"),
+          dbSelect("shifts"),
+          dbSelect("availability"),
+          dbSelect("time_off_requests"),
+          dbSelect("giveup_requests"),
+          dbSelect("app_state"),
+        ]);
+        if (cancelled) return;
         setUsers((u || []).map(normalizeUser));
-        setDepartments(d || []);
+        // Departments display in the order the owner arranged them in Setup.
+        setDepartments(sortDepartments(d || []));
         setShifts((s || []).map(normalizeShift));
         setAvailability((av || []).map(normalizeAvailability));
         setTimeOff((to || []).map(normalizeTimeOff));
         setGiveups((gu || []).map(normalizeGiveup));
-        const showDaysRow = (showDaysState || []).find((r) => r.key === "show_days");
-        const doorsCloseRow = (showDaysState || []).find((r) => r.key === "doors_close");
+        const showDaysRow = (appState || []).find((r) => r.key === "show_days");
+        const doorsCloseRow = (appState || []).find((r) => r.key === "doors_close");
         setShowDays(showDaysRow?.value || []);
         setDoorsClose(doorsCloseRow?.value || {});
+      } catch (e) {
+        if (cancelled) return;
+        console.error("Load failed:", e);
+        if (import.meta.env.DEV) {
+          // Local development without the /api functions: use sample data.
+          DEMO_MODE = true;
+          setUsers(DEMO_USERS);
+          setDepartments(DEMO_DEPARTMENTS);
+          setShowDays(DEMO_SHOW_DAYS);
+          setDoorsClose(DEMO_DOORS_CLOSE);
+          setShifts(DEMO_SHIFTS);
+          setAvailability([]);
+          setTimeOff([]);
+          setGiveups([]);
+        } else {
+          setLoadError(e);
+        }
       }
-      setLoading(false);
+      if (!cancelled) setLoading(false);
     })();
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [loadAttempt]);
 
   const role = !currentUser ? null : currentUser.isOwner ? "owner" : currentUser.isManager ? "manager" : "employee";
   const isAdmin = role === "owner" || role === "manager";
@@ -2374,7 +2654,7 @@ function AppInner() {
     const row = { id: uid(), userId: currentUser.id, startDate: payload.startDate, endDate: payload.endDate, reason: payload.reason, status: "pending" };
     setTimeOff((prev) => [...prev, row]);
     await dbWrite("INSERT", "time_off_requests", { rows: [row] });
-    await sendTelegram(`🗓️ <b>Time off requested</b>\n${currentUser.name}: ${payload.startDate} – ${payload.endDate}${payload.reason ? `\n"${payload.reason}"` : ""}`);
+    await sendTelegram(`🗓️ <b>Time off requested</b>\n${escapeHtml(currentUser.name)}: ${payload.startDate} – ${payload.endDate}${payload.reason ? `\n"${escapeHtml(payload.reason)}"` : ""}`);
   };
 
   const deleteTimeOff = async (id, status) => {
@@ -2395,7 +2675,7 @@ function AppInner() {
     await dbWrite("INSERT", "giveup_requests", { rows: [row] });
     const shift = shifts.find((s) => s.id === shiftId);
     const dept = departments.find((d) => d.id === shift?.deptId);
-    await sendTelegram(`🔄 <b>Shift posted for pickup</b>\n${currentUser.name} · ${dept?.name} · ${shift?.date}${note ? `\n"${note}"` : ""}`);
+    await sendTelegram(`🔄 <b>Shift posted for pickup</b>\n${escapeHtml(currentUser.name)} · ${escapeHtml(dept?.name)} · ${shift?.date}${note ? `\n"${escapeHtml(note)}"` : ""}`);
   };
 
   const cancelSwap = async (id) => {
@@ -2409,7 +2689,7 @@ function AppInner() {
     setShifts((prev) => prev.map((s) => (s.id === giveup.shiftId ? { ...s, userId: currentUser.id } : s)));
     await dbWrite("PATCH", "giveup_requests", { match: { id }, patch: { status: "claimed", claimedBy: currentUser.id } });
     await dbWrite("PATCH", "shifts", { match: { id: giveup.shiftId }, patch: { userId: currentUser.id } });
-    await sendTelegram(`✅ <b>Shift claimed</b> by ${currentUser.name}`);
+    await sendTelegram(`✅ <b>Shift claimed</b> by ${escapeHtml(currentUser.name)}`);
     toast(t("claimedShift"));
   };
 
@@ -2431,6 +2711,16 @@ function AppInner() {
     return (
       <div style={{ minHeight: "100vh", background: COLORS.bg, display: "flex", alignItems: "center", justifyContent: "center", color: COLORS.textDim, fontFamily: FONT_DISPLAY }}>
         Kingdom Scheduler…
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div style={{ minHeight: "100vh", background: COLORS.bg, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14, padding: 24, textAlign: "center" }}>
+        <div style={{ fontFamily: FONT_DISPLAY, fontSize: 18, fontWeight: 600 }}>{t("loadFailed")}</div>
+        <div style={{ color: COLORS.textDim, fontSize: 14, maxWidth: 360 }}>{t("loadFailedHelp")}</div>
+        <Button onClick={() => setLoadAttempt((n) => n + 1)}>{t("retry")}</Button>
       </div>
     );
   }
@@ -2458,9 +2748,11 @@ function AppInner() {
           {activeTab === "schedule" && (
             <ScheduleView currentUser={currentUser} shifts={shifts} users={users} showDays={showDays} doorsClose={doorsClose} />
           )}
-          {activeTab === "availability" && (
+          {activeTab === "availability" && (isAdmin ? (
+            <AvailabilityHub users={users} availability={availability} showDays={showDays} currentUser={currentUser} doorsClose={doorsClose} onSubmit={submitAvailability} />
+          ) : (
             <AvailabilityView currentUser={currentUser} showDays={showDays} doorsClose={doorsClose} availability={availability} onSubmit={submitAvailability} />
-          )}
+          ))}
           {activeTab === "timeoff" && (
             <TimeOffView
               currentUser={currentUser}
