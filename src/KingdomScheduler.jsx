@@ -139,9 +139,25 @@ const formatDay = (d, lang) =>
 const formatRange = (start, end, lang) =>
   `${formatShort(start, lang).toUpperCase()} \u2013 ${formatShort(end, lang).toUpperCase()}`;
 
+const toMinutes = (hhmm) => {
+  const [h, m] = hhmm.split(":").map(Number);
+  return h * 60 + (m || 0);
+};
+
+// Nightclub shifts run past midnight (9 PM -> 2 AM), so an end time that is
+// earlier than its start means "the next day". Comparing raw "HH:MM" strings
+// would treat 21:00 -> 02:00 as backwards and report false conflicts.
 const timeOverlaps = (aFrom, aUntil, bFrom, bUntil) => {
   if (!aFrom || !aUntil || !bFrom || !bUntil) return false;
-  return aFrom < bUntil && bFrom < aUntil;
+  const range = (from, until) => {
+    const start = toMinutes(from);
+    let end = toMinutes(until);
+    if (end <= start) end += 24 * 60;
+    return [start, end];
+  };
+  const [a1, a2] = range(aFrom, aUntil);
+  const [b1, b2] = range(bFrom, bUntil);
+  return a1 < b2 && b1 < a2;
 };
 
 // "14:30" -> "2:30 PM". Leaves "CLOSE" and empty values untouched — those
@@ -157,6 +173,44 @@ const formatTime12 = (value) => {
   h = h % 12;
   if (h === 0) h = 12;
   return `${h}:${mStr} ${ampm}`;
+};
+
+// Turns whatever someone types into a 24-hour "HH:MM" string (what the rest
+// of the app stores). Returns "" for an empty box and null if it can't be read.
+//   "9pm" "9 pm" "9p" "9:15pm" "915pm" "2:15am" "noon" "midnight" -> exact
+//   "21:00" "2100" "0900"                                          -> 24-hour
+// With no am/pm, it assumes nightclub hours: 1-5 is AM, 6-11 is PM, and a
+// bare 12 is midnight. Type "am" or "pm" whenever you mean something else.
+const parseTimeInput = (raw) => {
+  if (raw == null) return null;
+  const s = String(raw).trim().toLowerCase().replace(/\./g, "");
+  if (!s) return "";
+  if (s === "noon") return "12:00";
+  if (s === "midnight") return "00:00";
+
+  const match = s.match(/^(\d{1,2})(?::?(\d{2}))?\s*([ap])?m?$/);
+  if (!match) return null;
+
+  const hourText = match[1];
+  let h = parseInt(hourText, 10);
+  const min = match[2] ? parseInt(match[2], 10) : 0;
+  const suffix = match[3];
+  if (min > 59) return null;
+
+  if (suffix) {
+    if (h < 1 || h > 12) return null;
+    h = (h % 12) + (suffix === "p" ? 12 : 0);
+  } else if ((hourText.length === 2 && hourText.startsWith("0")) || h === 0 || h > 12) {
+    // Looks like 24-hour time ("21:00", "0900", "0:30").
+    if (h > 24 || (h === 24 && min !== 0)) return null;
+    h = h % 24;
+  } else if (h === 12) {
+    h = 0; // bare 12 -> midnight
+  } else if (h >= 6) {
+    h += 12; // 6-11 -> PM
+  } // 1-5 stay as AM
+
+  return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
 };
 
 /* ------------------------------- TRANSLATIONS ------------------------------ */
@@ -495,8 +549,8 @@ const nextSaturday = addDays(nextFriday, 1);
 const DEMO_SHOW_DAYS = [toISODate(nextFriday), toISODate(nextSaturday)];
 
 const DEMO_DOORS_CLOSE = {
-  [toISODate(nextFriday)]: { doors: "22:00", close: "CLOSE" },
-  [toISODate(nextSaturday)]: { doors: "22:00", close: "CLOSE" },
+  [toISODate(nextFriday)]: { doors: "22:00", close: "02:00" },
+  [toISODate(nextSaturday)]: { doors: "22:00", close: "02:00" },
 };
 
 const DEMO_SHIFTS = [
@@ -662,6 +716,69 @@ const TextInput = ({ label, value, onChange, placeholder, type = "text", require
     />
   </label>
 );
+
+/* One-box time entry. Type "9pm", "9:15pm", "2am", "915p" (see parseTimeInput)
+   and it tidies itself to "9:00 PM" when you tab or press Enter. `value` and
+   `onChange` use 24-hour "HH:MM" strings like everywhere else in the app.
+   If the text can't be read, the box flashes red and keeps its old time. */
+const TimeInput = ({ value, onChange, disabled, placeholder = "9pm", size = "md", ariaLabel, dim }) => {
+  const [draft, setDraft] = useState(null); // null = not being edited
+  const [invalid, setInvalid] = useState(false);
+  const timer = useRef(null);
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  const commit = () => {
+    if (draft === null) return;
+    const parsed = parseTimeInput(draft);
+    if (parsed === null) {
+      setInvalid(true);
+      clearTimeout(timer.current);
+      timer.current = setTimeout(() => setInvalid(false), 1500);
+    } else if (parsed !== (value || "")) {
+      onChange(parsed);
+    }
+    setDraft(null);
+  };
+
+  const small = size === "sm";
+  return (
+    <input
+      type="text"
+      autoComplete="off"
+      autoCapitalize="off"
+      spellCheck={false}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      aria-invalid={invalid}
+      title={invalid ? "Couldn't read that time. Try 9pm or 9:15pm." : undefined}
+      placeholder={placeholder}
+      value={draft !== null ? draft : formatTime12(value)}
+      onFocus={(e) => {
+        const el = e.target;
+        setDraft(formatTime12(value));
+        setTimeout(() => el.select(), 0);
+      }}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+      }}
+      className="ksn-focusable"
+      style={{
+        width: "100%",
+        minWidth: 0,
+        background: COLORS.bgRaised,
+        border: `1px solid ${invalid ? COLORS.red : COLORS.borderLight}`,
+        borderRadius: small ? 6 : 8,
+        padding: small ? "4px 6px" : "6px 8px",
+        color: COLORS.text,
+        fontSize: small ? 11.5 : 12.5,
+        opacity: dim ? 0.4 : 1,
+        outline: "none",
+      }}
+    />
+  );
+};
 
 /* Sheet modal — slides up from the bottom on mobile, centers on desktop */
 const Sheet = ({ open, onClose, title, children, maxWidth = 480 }) => {
@@ -1498,10 +1615,23 @@ const ScheduleBuilder = ({ users, shifts, setShifts, showDays, doorsClose, setDo
 
       {weekShowDays.length === 0 && <EmptyState icon="grid" title={t("noShowDaysBuilder")} />}
 
-      <div style={{ overflowX: "auto" }}>
+      {/* This box is the scroller for the grid (both directions), so the day
+          header below can stick to its top edge while you scroll down. */}
+      <div style={{ overflow: "auto", maxHeight: "calc(100vh - 220px)", minHeight: 320 }}>
         <div style={{ minWidth: weekShowDays.length * 220 + 160 }}>
-          {/* Doors/Close row */}
-          <div style={{ display: "grid", gridTemplateColumns: `160px repeat(${weekShowDays.length}, 1fr)`, gap: 8, marginBottom: 10 }}>
+          {/* Day / Doors / Close header — stays pinned while scrolling */}
+          <div
+            style={{
+              position: "sticky",
+              top: 0,
+              zIndex: 5,
+              background: COLORS.bg,
+              paddingBottom: 10,
+              display: "grid",
+              gridTemplateColumns: `160px repeat(${weekShowDays.length}, 1fr)`,
+              gap: 8,
+            }}
+          >
             <div />
             {weekShowDays.map((date) => {
               const dc = doorsClose[date] || {};
@@ -1509,22 +1639,22 @@ const ScheduleBuilder = ({ users, shifts, setShifts, showDays, doorsClose, setDo
                 <Card key={date} style={{ padding: 10 }}>
                   <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 13.5, marginBottom: 8 }}>{formatShort(parseISODate(date), lang)}</div>
                   <div style={{ display: "flex", gap: 6 }}>
-                    <label style={{ flex: 1, display: "flex", flexDirection: "column", gap: 3 }}>
+                    <label style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 3 }}>
                       <span style={{ fontSize: 10, color: COLORS.textFaint }}>{t("doors")}</span>
-                      <input
-                        type="time"
+                      <TimeInput
+                        ariaLabel={t("doors")}
                         value={dc.doors || ""}
-                        onChange={(e) => setDoorsClose((prev) => ({ ...prev, [date]: { ...prev[date], doors: e.target.value } }))}
-                        style={{ background: COLORS.bgRaised, border: `1px solid ${COLORS.borderLight}`, borderRadius: 8, padding: "6px 8px", color: COLORS.text, fontSize: 12.5 }}
+                        onChange={(v) => setDoorsClose((prev) => ({ ...prev, [date]: { ...prev[date], doors: v } }))}
                       />
                     </label>
-                    <label style={{ flex: 1, display: "flex", flexDirection: "column", gap: 3 }}>
+                    <label style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 3 }}>
                       <span style={{ fontSize: 10, color: COLORS.textFaint }}>{t("close")}</span>
-                      <input
-                        type="time"
-                        value={dc.close || ""}
-                        onChange={(e) => setDoorsClose((prev) => ({ ...prev, [date]: { ...prev[date], close: e.target.value } }))}
-                        style={{ background: COLORS.bgRaised, border: `1px solid ${COLORS.borderLight}`, borderRadius: 8, padding: "6px 8px", color: COLORS.text, fontSize: 12.5 }}
+                      <TimeInput
+                        ariaLabel={t("close")}
+                        // Days set with the old Time/CLOSE dropdown may still hold the
+                        // word "CLOSE"; show those as empty so a real time can be typed.
+                        value={dc.close && dc.close !== "CLOSE" ? dc.close : ""}
+                        onChange={(v) => setDoorsClose((prev) => ({ ...prev, [date]: { ...prev[date], close: v } }))}
                       />
                     </label>
                   </div>
@@ -1574,19 +1704,22 @@ const ScheduleBuilder = ({ users, shifts, setShifts, showDays, doorsClose, setDo
                                 </div>
                               )}
                               <div style={{ display: "flex", gap: 4 }}>
-                                <input
-                                  type="time"
+                                <TimeInput
+                                  size="sm"
+                                  placeholder="Start"
+                                  ariaLabel={`${u.name} start`}
                                   disabled={shift?.onCall}
                                   value={shift?.start || ""}
-                                  onChange={(e) => updateShift(u.id, dept.id, date, { start: e.target.value, end: shift?.end || "" })}
-                                  style={{ width: "50%", background: COLORS.bgRaised, border: `1px solid ${COLORS.borderLight}`, borderRadius: 6, padding: "4px 6px", color: COLORS.text, fontSize: 11.5 }}
+                                  onChange={(v) => updateShift(u.id, dept.id, date, { start: v, end: shift?.end || "" })}
                                 />
-                                <input
-                                  type="time"
+                                <TimeInput
+                                  size="sm"
+                                  placeholder="End"
+                                  ariaLabel={`${u.name} end`}
                                   disabled={shift?.onCall || shift?.end === "CLOSE"}
+                                  dim={shift?.end === "CLOSE"}
                                   value={shift?.end === "CLOSE" ? "" : shift?.end || ""}
-                                  onChange={(e) => updateShift(u.id, dept.id, date, { end: e.target.value })}
-                                  style={{ width: "50%", background: COLORS.bgRaised, border: `1px solid ${COLORS.borderLight}`, borderRadius: 6, padding: "4px 6px", color: COLORS.text, fontSize: 11.5, opacity: shift?.end === "CLOSE" ? 0.4 : 1 }}
+                                  onChange={(v) => updateShift(u.id, dept.id, date, { end: v })}
                                 />
                               </div>
                               <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, color: COLORS.textDim }}>
