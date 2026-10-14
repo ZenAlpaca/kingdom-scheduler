@@ -349,6 +349,28 @@ const translations = {
     moveDown: "Move down",
     reorder: "Reorder",
     saveFailed: "That change didn't save. Refresh the page to see what's actually saved.",
+    swapHaveShift: "You already work that night. Post your own shift for pickup first, then claim this one once it's covered.",
+    swapReplacesOnCall: "Claiming this replaces your ON CALL that night.",
+    swapTaken: "Someone else already picked that shift up.",
+    saveDraft: "Save draft",
+    draftSaved: "Draft saved",
+    draftBanner: "Draft saved by {name} · {when}",
+    draftNone: "No saved draft for this week",
+    draftUnsaved: "Unsaved changes",
+    draftLoadLatest: "Load saved draft",
+    draftDiscard: "Discard draft",
+    draftDiscardConfirm: "Discard the saved draft for this week? The published schedule is not affected.",
+    draftNote: "Drafts are shared with other managers and are not visible to staff until you publish.",
+    standingTitle: "Regular weekly availability",
+    standingHelp: "Set it once. It counts for every show night you haven't submitted a specific week for. Submit a week any time to override it.",
+    standingSave: "Save regular availability",
+    standingSaved: "Regular availability saved",
+    standingNotSet: "Not set",
+    standingFromRegular: "From your regular availability",
+    standingOpen: "Edit",
+    standingClose: "Hide",
+    standingSummarySet: "{n} of 7 days set",
+    regularTag: "regular",
     loadFailed: "Couldn't load the schedule data.",
     loadFailedHelp: "Check your connection and try again. If it keeps happening, check the project's function logs.",
     retry: "Try again",
@@ -478,6 +500,28 @@ const translations = {
     moveDown: "Bajar",
     reorder: "Reordenar",
     saveFailed: "Ese cambio no se guard\u00f3. Actualiza la p\u00e1gina para ver lo que realmente se guard\u00f3.",
+    swapHaveShift: "Ya trabajas esa noche. Primero publica tu turno para que lo tomen y luego toma este cuando est\u00e9 cubierto.",
+    swapReplacesOnCall: "Al tomar este turno se reemplaza tu DE GUARDIA de esa noche.",
+    swapTaken: "Otra persona ya tom\u00f3 ese turno.",
+    saveDraft: "Guardar borrador",
+    draftSaved: "Borrador guardado",
+    draftBanner: "Borrador guardado por {name} \u00b7 {when}",
+    draftNone: "No hay borrador guardado para esta semana",
+    draftUnsaved: "Cambios sin guardar",
+    draftLoadLatest: "Cargar borrador guardado",
+    draftDiscard: "Descartar borrador",
+    draftDiscardConfirm: "\u00bfDescartar el borrador guardado de esta semana? El horario publicado no se ve afectado.",
+    draftNote: "Los borradores se comparten con otros gerentes y el personal no los ve hasta que publiques.",
+    standingTitle: "Disponibilidad semanal fija",
+    standingHelp: "Config\u00fdrala una vez. Cuenta para cada noche de show de las semanas en las que no env\u00edes una disponibilidad espec\u00edfica. Env\u00eda una semana cuando quieras para cambiarla.",
+    standingSave: "Guardar disponibilidad fija",
+    standingSaved: "Disponibilidad fija guardada",
+    standingNotSet: "Sin definir",
+    standingFromRegular: "De tu disponibilidad fija",
+    standingOpen: "Editar",
+    standingClose: "Ocultar",
+    standingSummarySet: "{n} de 7 d\u00edas definidos",
+    regularTag: "fija",
     loadFailed: "No se pudieron cargar los datos del horario.",
     loadFailedHelp: "Revisa tu conexi\u00f3n e int\u00e9ntalo de nuevo. Si sigue pasando, revisa los registros de funciones del proyecto.",
     retry: "Intentar de nuevo",
@@ -1237,7 +1281,14 @@ const ShiftRow = ({ shift, departments, person }) => {
         </div>
       </div>
       {shift.onCall ? (
-        <Badge color={COLORS.yellow}>{t("onCall")}</Badge>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {shift.start && (
+            <span style={{ fontSize: 12.5, color: COLORS.textDim }}>
+              {formatTime12(shift.start)}{shift.end ? ` – ${shift.end === "CLOSE" ? "CLOSE" : formatTime12(shift.end)}` : ""}
+            </span>
+          )}
+          <Badge color={COLORS.yellow}>{t("onCall")}</Badge>
+        </div>
       ) : (
         <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text }}>
           {formatTime12(shift.start)} – {shift.end === "CLOSE" ? "CLOSE" : formatTime12(shift.end)}
@@ -1251,7 +1302,104 @@ const ShiftRow = ({ shift, departments, person }) => {
    EMPLOYEE — AVAILABILITY
 ================================================================= */
 
-const AvailabilityView = ({ currentUser, showDays, doorsClose, availability, onSubmit }) => {
+// Standing ("regular") availability: one weekly pattern per person, stored in
+// app_state under "standing:<userId>" as { days: { "0".."6": entry | null } }
+// (0 = Sunday). A week the person submitted specifically always wins.
+const standingKey = (userId) => `standing:${userId}`;
+function standingFromAppState(rows) {
+  const out = {};
+  for (const r of rows || []) {
+    if (typeof r.key === "string" && r.key.startsWith("standing:") && r.value && r.value.days) out[r.key.slice(9)] = r.value.days;
+  }
+  return out;
+}
+function effectiveAvailability(availability, standing, userId, date) {
+  const specific = availability.find((a) => a.userId === userId && a.date === date);
+  if (specific) return specific;
+  const day = standing?.[userId]?.[String(parseISODate(date).getDay())];
+  if (!day) return undefined;
+  return { id: null, userId, date, available: day.available, allDay: day.allDay, from: day.from || "", until: day.until || "", notes: day.notes || "", standing: true };
+}
+
+const StandingAvailability = ({ currentUser, standing, onSave }) => {
+  const t = useT();
+  const { lang } = useLang();
+  const saved = standing[currentUser.id] || {};
+  const [open, setOpen] = useState(false);
+  const [days, setDays] = useState(saved);
+  const [saving, setSaving] = useState(false);
+  const order = [1, 2, 3, 4, 5, 6, 0];
+  const dayName = (dow) => {
+    // 2024-01-07 is a Sunday
+    return new Date(2024, 0, 7 + dow).toLocaleDateString(lang === "es" ? "es-ES" : "en-US", { weekday: "long" });
+  };
+  const blank = { available: true, allDay: true, from: "", until: "", notes: "" };
+  const setDay = (dow, patch) => setDays((prev) => ({ ...prev, [dow]: patch === null ? null : { ...(prev[dow] || blank), ...patch } }));
+  const countSet = order.filter((d) => saved[d]).length;
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await onSave(days);
+      setOpen(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+        <div>
+          <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 14.5 }}>{t("standingTitle")}</div>
+          <div style={{ fontSize: 12.5, color: COLORS.textDim, marginTop: 2 }}>{t("standingSummarySet").replace("{n}", countSet)}</div>
+        </div>
+        <Button size="sm" variant="outline" onClick={() => { setDays(saved); setOpen((o) => !o); }}>{open ? t("standingClose") : t("standingOpen")}</Button>
+      </div>
+
+      {open && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 14 }}>
+          <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>{t("standingHelp")}</div>
+          {order.map((dow) => {
+            const e = days[dow];
+            return (
+              <div key={dow} style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: 12 }}>
+                <div style={{ fontWeight: 600, fontSize: 13.5, marginBottom: 8, textTransform: "capitalize" }}>{dayName(dow)}</div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <Button size="sm" variant={!e ? "primary" : "outline"} onClick={() => setDay(dow, null)}>{t("standingNotSet")}</Button>
+                  <Button size="sm" variant={e?.available ? "primary" : "outline"} onClick={() => setDay(dow, { available: true })} style={e?.available ? { background: COLORS.green, borderColor: COLORS.green, color: "#052e12" } : {}}>
+                    <Icon name="check" size={14} />{t("available")}
+                  </Button>
+                  <Button size="sm" variant={e && !e.available ? "primary" : "outline"} onClick={() => setDay(dow, { available: false })} style={e && !e.available ? { background: COLORS.red, borderColor: COLORS.red, color: "#2c0a0a" } : {}}>
+                    <Icon name="x" size={14} />{t("notAvailable")}
+                  </Button>
+                </div>
+                {e?.available && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <Button size="sm" variant={e.allDay ? "primary" : "outline"} onClick={() => setDay(dow, { allDay: true })}>{t("allDay")}</Button>
+                      <Button size="sm" variant={!e.allDay ? "primary" : "outline"} onClick={() => setDay(dow, { allDay: false })}>{t("from")}/{t("until")}</Button>
+                    </div>
+                    {!e.allDay && (
+                      <div style={{ display: "flex", gap: 10 }}>
+                        <TextInput label={t("from")} type="time" value={e.from} onChange={(v) => setDay(dow, { from: v })} />
+                        <TextInput label={t("until")} type="time" value={e.until} onChange={(v) => setDay(dow, { until: v })} />
+                      </div>
+                    )}
+                    <TextInput label={t("notes")} value={e.notes} onChange={(v) => setDay(dow, { notes: v })} placeholder="…" />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          <Button full onClick={save} disabled={saving}>{t("standingSave")}</Button>
+        </div>
+      )}
+    </Card>
+  );
+};
+
+const AvailabilityView = ({ currentUser, showDays, doorsClose, availability, onSubmit, standing, onSaveStanding }) => {
   const t = useT();
   const { lang } = useLang();
 
@@ -1276,9 +1424,9 @@ const AvailabilityView = ({ currentUser, showDays, doorsClose, availability, onS
     const initial = {};
     upcoming.forEach((d) => {
       const iso = toISODate(d);
-      const existing = availability.find((a) => a.userId === currentUser.id && a.date === iso);
+      const existing = effectiveAvailability(availability, standing, currentUser.id, iso);
       initial[iso] = existing
-        ? { available: existing.available, allDay: existing.allDay, from: existing.from || "", until: existing.until || "", notes: existing.notes || "" }
+        ? { available: existing.available, allDay: existing.allDay, from: existing.from || "", until: existing.until || "", notes: existing.notes || "", fromStanding: !!existing.standing }
         : { available: true, allDay: true, from: "", until: "", notes: "" };
     });
     return initial;
@@ -1292,7 +1440,7 @@ const AvailabilityView = ({ currentUser, showDays, doorsClose, availability, onS
     });
   };
 
-  const updateEntry = (iso, patch) => setEntries((prev) => ({ ...prev, [iso]: { ...prev[iso], ...patch } }));
+  const updateEntry = (iso, patch) => setEntries((prev) => ({ ...prev, [iso]: { ...prev[iso], ...patch, fromStanding: false } }));
 
   const activeDates = weekBubbles.filter((w) => selectedWeeks.has(w.weekStart)).flatMap((w) => w.dates);
 
@@ -1304,6 +1452,8 @@ const AvailabilityView = ({ currentUser, showDays, doorsClose, availability, onS
         <div style={{ fontFamily: FONT_DISPLAY, fontSize: 18, fontWeight: 600 }}>{t("availabilityTitle")}</div>
         <div style={{ color: COLORS.textDim, fontSize: 13.5, marginTop: 2 }}>{t("availabilitySubtitle")}</div>
       </div>
+
+      <StandingAvailability currentUser={currentUser} standing={standing} onSave={onSaveStanding} />
 
       <div>
         <div style={{ fontSize: 12, color: COLORS.textFaint, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.4 }}>{t("selectWeeks")}</div>
@@ -1350,6 +1500,7 @@ const AvailabilityView = ({ currentUser, showDays, doorsClose, availability, onS
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
                 <div>
                   <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 14.5 }}>{formatShort(d, lang)}</div>
+                  {entry.fromStanding && <div style={{ fontSize: 11.5, color: COLORS.blue, marginTop: 4 }}>{t("standingFromRegular")}</div>}
                   {(dc.doors || dc.close) && (
                     <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
                       {dc.doors && <Badge color={COLORS.textDim}>{t("doors")} {formatTime12(dc.doors)}</Badge>}
@@ -1392,7 +1543,7 @@ const AvailabilityView = ({ currentUser, showDays, doorsClose, availability, onS
         })}
       </div>
 
-      <Button full size="lg" onClick={() => onSubmit(activeDates.map(toISODate).map((iso) => ({ date: iso, ...entries[iso] })))}>
+      <Button full size="lg" onClick={() => onSubmit(activeDates.map(toISODate).map((iso) => { const { fromStanding, ...rest } = entries[iso]; return { date: iso, ...rest }; }))}>
         {t("submitAvailability")}
       </Button>
     </div>
@@ -1509,7 +1660,7 @@ const ShiftSwapsView = ({ currentUser, shifts, giveups, users, departments, onPo
 
   const shiftLabel = (s) => {
     const dept = departments.find((d) => d.id === s.deptId);
-    return `${dept?.name} · ${formatShort(parseISODate(s.date), lang)} · ${s.onCall ? t("onCall") : `${formatTime12(s.start)}–${s.end === "CLOSE" ? "CLOSE" : formatTime12(s.end)}`}`;
+    return `${dept?.name} · ${formatShort(parseISODate(s.date), lang)} · ${s.onCall ? `${t("onCall")}${s.start ? ` ${formatTime12(s.start)}` : ""}` : `${formatTime12(s.start)}–${s.end === "CLOSE" ? "CLOSE" : formatTime12(s.end)}`}`;
   };
 
   return (
@@ -1521,6 +1672,9 @@ const ShiftSwapsView = ({ currentUser, shifts, giveups, users, departments, onPo
         {claimable.map((g) => {
           const s = shifts.find((x) => x.id === g.shiftId);
           const poster = users.find((u) => u.id === g.fromUserId);
+          const mine = s && shifts.find((x) => x.userId === currentUser.id && x.date === s.date && x.id !== s.id);
+          const blockedByShift = !!mine && !mine.onCall;
+          const replacesOnCall = !!mine && mine.onCall;
           return (
             <Card key={g.id} style={{ marginBottom: 10 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -1529,8 +1683,10 @@ const ShiftSwapsView = ({ currentUser, shifts, giveups, users, departments, onPo
                   <div style={{ color: COLORS.textDim, fontSize: 12.5, marginTop: 2 }}>from {poster?.name}</div>
                   {g.note && <div style={{ color: COLORS.textDim, fontSize: 12.5, marginTop: 4, fontStyle: "italic" }}>"{g.note}"</div>}
                 </div>
-                <Button size="sm" onClick={() => onClaim(g.id)}>{t("claim")}</Button>
+                <Button size="sm" disabled={blockedByShift} onClick={() => onClaim(g.id)}>{t("claim")}</Button>
               </div>
+              {blockedByShift && <div style={{ color: COLORS.yellow, fontSize: 12, marginTop: 8 }}>{t("swapHaveShift")}</div>}
+              {replacesOnCall && <div style={{ color: COLORS.textDim, fontSize: 12, marginTop: 8 }}>{t("swapReplacesOnCall")}</div>}
             </Card>
           );
         })}
@@ -1600,7 +1756,7 @@ const Section = ({ title, children }) => (
    ADMIN — SCHEDULE BUILDER
 ================================================================= */
 
-const ScheduleBuilder = ({ users, shifts, setShifts, showDays, doorsClose, setDoorsClose, availability, timeOff }) => {
+const ScheduleBuilder = ({ users, shifts, setShifts, showDays, doorsClose, setDoorsClose, availability, timeOff, drafts, setDrafts, currentUser, standing }) => {
   const t = useT();
   const { lang } = useLang();
   const { departments } = useDepts();
@@ -1609,14 +1765,95 @@ const ScheduleBuilder = ({ users, shifts, setShifts, showDays, doorsClose, setDo
   const [pending, setPending] = useState(shifts); // local editable copy
   const [publishing, setPublishing] = useState(false);
 
-  useEffect(() => setPending(shifts), [shifts]);
+  // ---- Saved drafts (shared with other managers; invisible to staff) ----
+  const key = draftKey(weekStart);
+  const draft = drafts[key];
+  const loadedRef = useRef(new Set()); // draft keys currently applied to the editor
+  const [savingDraft, setSavingDraft] = useState(false);
+
+  const daysOfKey = (k) => new Set(weekDates(parseISODate(k.slice(6))).map(toISODate));
+  const applyDraft = (prev, k, d) => {
+    const days = daysOfKey(k);
+    return [...prev.filter((x) => !days.has(x.date)), ...d.shifts];
+  };
+
+  // Published shifts, with any loaded draft laid over its week.
+  useEffect(() => {
+    let out = shifts;
+    for (const k of loadedRef.current) if (drafts[k]) out = applyDraft(out, k, drafts[k]);
+    setPending(out);
+  }, [shifts, drafts]);
+
+  // Pull the newest saved draft for this week (a different manager may have
+  // saved one). force=true replaces what's on screen with it.
+  const syncDraft = async (force) => {
+    let rows;
+    try {
+      rows = await dbSelect("app_state");
+    } catch (e) {
+      console.error("Draft refresh failed:", e);
+      if (force) toast(t("saveFailed"), "error");
+      return;
+    }
+    const fresh = draftsFromAppState(rows)[key];
+    if (!fresh) return;
+    if (!force && loadedRef.current.has(key)) return;
+    loadedRef.current.add(key);
+    setDrafts((prev) => ({ ...prev, [key]: fresh }));
+    setPending((prev) => applyDraft(prev, key, fresh));
+  };
+
+  // Opening a week (or the Builder tab) picks up its draft automatically.
+  useEffect(() => {
+    syncDraft(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  const rowSig = (list, days) =>
+    list
+      .filter((s) => days.has(s.date) && s.userId && (s.onCall || s.start || s.end))
+      .map((s) => `${s.id}|${s.userId}|${s.date}|${s.start || ""}|${s.end || ""}|${s.onCall ? 1 : 0}`)
+      .sort()
+      .join(",");
+  const weekDaySet = useMemo(() => daysOfKey(key), [key]);
+  const baseline = draft && loadedRef.current.has(key) ? draft.shifts : shifts;
+  const dirty = rowSig(pending, weekDaySet) !== rowSig(baseline, weekDaySet);
+
+  const saveDraft = async () => {
+    setSavingDraft(true);
+    try {
+      const rows = pending
+        .filter((s) => weekDaySet.has(s.date) && s.userId && (s.onCall || s.start || s.end))
+        .map((s) => ({ id: s.id, userId: s.userId, deptId: s.deptId, date: s.date, start: s.start || "", end: s.end || "", onCall: !!s.onCall }));
+      const value = { shifts: rows, savedBy: currentUser?.name || "", savedAt: new Date().toISOString() };
+      const res = await dbWrite("UPSERT", "app_state", { key, value });
+      if (!res) return;
+      loadedRef.current.add(key);
+      setDrafts((prev) => ({ ...prev, [key]: value }));
+      toast(t("draftSaved"));
+    } finally {
+      setSavingDraft(false);
+    }
+  };
+
+  const discardDraft = async () => {
+    if (!window.confirm(t("draftDiscardConfirm"))) return;
+    const res = await dbWrite("DELETE", "app_state", { match: { key } });
+    if (!res) return;
+    loadedRef.current.delete(key);
+    setDrafts((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  };
 
   const weekShowDays = useMemo(
     () => showDays.filter((d) => weekDates(weekStart).map(toISODate).includes(d)).sort(),
     [weekStart, showDays]
   );
 
-  const availabilityFor = (userId, date) => availability.find((a) => a.userId === userId && a.date === date);
+  const availabilityFor = (userId, date) => effectiveAvailability(availability, standing, userId, date);
   const onApprovedTimeOff = (userId, date) =>
     timeOff.some((r) => r.userId === userId && r.status === "approved" && date >= r.startDate && date <= r.endDate);
 
@@ -1661,6 +1898,16 @@ const ScheduleBuilder = ({ users, shifts, setShifts, showDays, doorsClose, setDo
         const removed = await dbWrite("DELETE", "shifts", { match: { id: staleIds } });
         if (!removed) return;
       }
+      // The draft has served its purpose; leaving it would bring old edits back.
+      if (drafts[key]) {
+        await dbWrite("DELETE", "app_state", { match: { key } });
+        loadedRef.current.delete(key);
+        setDrafts((prev) => {
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+      }
       setShifts((prev) => [...prev.filter((s) => !weekShowDays.includes(s.date)), ...weekShifts]);
       await sendTelegram(`📋 <b>Schedule published</b> for ${formatRange(weekStart, addDays(weekStart, 6), lang)}.`);
       toast(t("published"));
@@ -1675,10 +1922,31 @@ const ScheduleBuilder = ({ users, shifts, setShifts, showDays, doorsClose, setDo
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
         <div style={{ fontFamily: FONT_DISPLAY, fontSize: 18, fontWeight: 600 }}>{t("builderTitle")}</div>
-        <Button onClick={publish} disabled={publishing}>{t("publish")}</Button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Button variant="outline" onClick={saveDraft} disabled={savingDraft || publishing}>{t("saveDraft")}</Button>
+          <Button onClick={publish} disabled={publishing}>{t("publish")}</Button>
+        </div>
       </div>
 
       <WeekNav weekStart={weekStart} onChange={setWeekStart} />
+
+      {(draft || dirty) && (
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, fontSize: 12.5, color: COLORS.textDim }}>
+          {dirty && <Badge color={COLORS.yellow}>{t("draftUnsaved")}</Badge>}
+          {draft && (
+            <>
+              <span>
+                {t("draftBanner")
+                  .replace("{name}", draft.savedBy || "—")
+                  .replace("{when}", new Date(draft.savedAt).toLocaleString(lang === "es" ? "es-ES" : "en-US", { weekday: "short", hour: "numeric", minute: "2-digit" }))}
+              </span>
+              <button onClick={() => syncDraft(true)} style={{ background: "none", border: "none", color: COLORS.accent, fontSize: 12.5, padding: 0, fontWeight: 600 }}>{t("draftLoadLatest")}</button>
+              <button onClick={discardDraft} style={{ background: "none", border: "none", color: COLORS.red, fontSize: 12.5, padding: 0, fontWeight: 600 }}>{t("draftDiscard")}</button>
+            </>
+          )}
+        </div>
+      )}
+      <div style={{ fontSize: 11.5, color: COLORS.textFaint, marginTop: -10 }}>{t("draftNote")}</div>
 
       {weekShowDays.length === 0 && <EmptyState icon="grid" title={t("noShowDaysBuilder")} />}
 
@@ -1768,6 +2036,7 @@ const ScheduleBuilder = ({ users, shifts, setShifts, showDays, doorsClose, setDo
                               {avail && (
                                 <div style={{ fontSize: 10.5, color: avail.available ? COLORS.blue : COLORS.red, fontWeight: 600 }}>
                                   {avail.available ? (avail.allDay ? t("allDay") : `${formatTime12(avail.from)}–${formatTime12(avail.until)}`) : t("notAvailable")}
+                                  {avail.standing && <span style={{ color: COLORS.textFaint, fontWeight: 500 }}> · {t("regularTag")}</span>}
                                 </div>
                               )}
                               {avail?.notes && avail.notes.trim() && (
@@ -1780,7 +2049,6 @@ const ScheduleBuilder = ({ users, shifts, setShifts, showDays, doorsClose, setDo
                                   size="sm"
                                   placeholder={t("start")}
                                   ariaLabel={`${u.name} start`}
-                                  disabled={shift?.onCall}
                                   value={shift?.start || ""}
                                   onChange={(v) => updateShift(u.id, dept.id, date, { start: v, end: shift?.end || "" })}
                                 />
@@ -1788,7 +2056,7 @@ const ScheduleBuilder = ({ users, shifts, setShifts, showDays, doorsClose, setDo
                                   size="sm"
                                   placeholder={t("end")}
                                   ariaLabel={`${u.name} end`}
-                                  disabled={shift?.onCall || shift?.end === "CLOSE"}
+                                  disabled={shift?.end === "CLOSE"}
                                   dim={shift?.end === "CLOSE"}
                                   value={shift?.end === "CLOSE" ? "" : shift?.end || ""}
                                   onChange={(v) => updateShift(u.id, dept.id, date, { end: v })}
@@ -1797,7 +2065,6 @@ const ScheduleBuilder = ({ users, shifts, setShifts, showDays, doorsClose, setDo
                               <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, color: COLORS.textDim }}>
                                 <input
                                   type="checkbox"
-                                  disabled={shift?.onCall}
                                   checked={shift?.end === "CLOSE"}
                                   onChange={(e) => updateShift(u.id, dept.id, date, { end: e.target.checked ? "CLOSE" : "" })}
                                 />
@@ -1807,7 +2074,7 @@ const ScheduleBuilder = ({ users, shifts, setShifts, showDays, doorsClose, setDo
                                 <input
                                   type="checkbox"
                                   checked={!!shift?.onCall}
-                                  onChange={(e) => updateShift(u.id, dept.id, date, { onCall: e.target.checked, start: "", end: "" })}
+                                  onChange={(e) => updateShift(u.id, dept.id, date, { onCall: e.target.checked })}
                                 />
                                 {t("onCall")}
                               </label>
@@ -1898,14 +2165,14 @@ const ShowDaysCalendar = ({ showDays, onToggle }) => {
    ADMIN — AVAILABILITY REVIEW
 ================================================================= */
 
-const AvailabilityAdmin = ({ users, availability, showDays }) => {
+const AvailabilityAdmin = ({ users, availability, showDays, standing }) => {
   const t = useT();
   const { lang } = useLang();
   const [weekStart, setWeekStart] = useState(startOfWeek(new Date()));
   const employees = users.filter((u) => !u.isOwner);
   const weekShowDays = showDays.filter((d) => weekDates(weekStart).map(toISODate).includes(d));
 
-  const submitted = employees.filter((u) => weekShowDays.every((d) => availability.some((a) => a.userId === u.id && a.date === d)));
+  const submitted = employees.filter((u) => weekShowDays.every((d) => effectiveAvailability(availability, standing, u.id, d)));
   const notSubmitted = employees.filter((u) => !submitted.includes(u));
 
   return (
@@ -1927,14 +2194,14 @@ const AvailabilityAdmin = ({ users, availability, showDays }) => {
 
       <Section title={`${t("submittedSection")} (${submitted.length})`}>
         {submitted.map((u) => {
-          const entries = weekShowDays.map((d) => availability.find((a) => a.userId === u.id && a.date === d)).filter(Boolean);
+          const entries = weekShowDays.map((d) => effectiveAvailability(availability, standing, u.id, d)).filter(Boolean);
           return (
             <Card key={u.id} style={{ marginBottom: 8 }}>
               <div style={{ fontWeight: 700, fontSize: 13.5, marginBottom: 6 }}>{u.name}</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                 {entries.map((e) => (
                   <Badge key={e.date} color={e.available ? COLORS.green : COLORS.red}>
-                    {formatShort(parseISODate(e.date), lang)}: {e.available ? (e.allDay ? t("allDay") : `${formatTime12(e.from)}-${formatTime12(e.until)}`) : t("notAvailable")}
+                    {formatShort(parseISODate(e.date), lang)}: {e.available ? (e.allDay ? t("allDay") : `${formatTime12(e.from)}-${formatTime12(e.until)}`) : t("notAvailable")}{e.standing ? ` (${t("regularTag")})` : ""}
                   </Badge>
                 ))}
               </div>
@@ -1953,7 +2220,7 @@ const AvailabilityAdmin = ({ users, availability, showDays }) => {
 };
 
 // Owners and managers get both: a review of who has submitted, and their own form.
-const AvailabilityHub = ({ users, availability, showDays, currentUser, doorsClose, onSubmit }) => {
+const AvailabilityHub = ({ users, availability, showDays, currentUser, doorsClose, onSubmit, standing, onSaveStanding }) => {
   const t = useT();
   const [view, setView] = useState("review"); // review | mine
   return (
@@ -1981,9 +2248,9 @@ const AvailabilityHub = ({ users, availability, showDays, currentUser, doorsClos
         ))}
       </div>
       {view === "review" ? (
-        <AvailabilityAdmin users={users} availability={availability} showDays={showDays} />
+        <AvailabilityAdmin users={users} availability={availability} showDays={showDays} standing={standing} />
       ) : (
-        <AvailabilityView currentUser={currentUser} showDays={showDays} doorsClose={doorsClose} availability={availability} onSubmit={onSubmit} />
+        <AvailabilityView key={JSON.stringify(standing[currentUser.id] || {})} currentUser={currentUser} showDays={showDays} doorsClose={doorsClose} availability={availability} onSubmit={onSubmit} standing={standing} onSaveStanding={onSaveStanding} />
       )}
     </div>
   );
@@ -2566,6 +2833,8 @@ function AppInner() {
   const [availability, setAvailability] = useState([]);
   const [timeOff, setTimeOff] = useState([]);
   const [giveups, setGiveups] = useState([]);
+  const [standing, setStanding] = useState({}); // { userId: { "0".."6": entry } }
+  const [drafts, setDrafts] = useState({}); // { "draft:2026-10-05": { shifts, savedBy, savedAt } }
 
   // A failed save should never be silent (see dbWrite).
   useEffect(() => {
@@ -2602,6 +2871,8 @@ function AppInner() {
         const doorsCloseRow = (appState || []).find((r) => r.key === "doors_close");
         setShowDays(showDaysRow?.value || []);
         setDoorsClose(doorsCloseRow?.value || {});
+        setDrafts(draftsFromAppState(appState));
+        setStanding(standingFromAppState(appState));
       } catch (e) {
         if (cancelled) return;
         console.error("Load failed:", e);
@@ -2660,6 +2931,25 @@ function AppInner() {
     toast(t("availabilitySubmitted"));
   };
 
+  const saveStanding = async (days) => {
+    // Drop days left "not set" and incomplete time windows' leftovers.
+    const clean = {};
+    for (const [dow, e] of Object.entries(days || {})) {
+      if (!e) continue;
+      clean[dow] = e.available
+        ? { available: true, allDay: !!e.allDay, from: e.allDay ? "" : e.from || "", until: e.allDay ? "" : e.until || "", notes: e.notes || "" }
+        : { available: false, allDay: true, from: "", until: "", notes: "" };
+    }
+    const previous = standing[currentUser.id];
+    setStanding((prev) => ({ ...prev, [currentUser.id]: clean }));
+    const res = await dbWrite("UPSERT", "app_state", { key: standingKey(currentUser.id), value: { days: clean } });
+    if (!res) {
+      setStanding((prev) => ({ ...prev, [currentUser.id]: previous || {} }));
+      return;
+    }
+    toast(t("standingSaved"));
+  };
+
   const createTimeOff = async (payload) => {
     const row = { id: uid(), userId: currentUser.id, startDate: payload.startDate, endDate: payload.endDate, reason: payload.reason, status: "pending" };
     setTimeOff((prev) => [...prev, row]);
@@ -2695,10 +2985,32 @@ function AppInner() {
 
   const claimSwap = async (id) => {
     const giveup = giveups.find((g) => g.id === id);
+    if (!giveup) return;
+    const target = shifts.find((s) => s.id === giveup.shiftId);
+    if (!target) return;
+
+    // Anyone who already works that night has to hand their own shift off first.
+    // An ON CALL slot doesn't count as a real shift: it is swapped out for the new one.
+    const mine = shifts.find((s) => s.userId === currentUser.id && s.date === target.date && s.id !== target.id);
+    if (mine && !mine.onCall) {
+      toast(t("swapHaveShift"), "error");
+      return;
+    }
+
+    // Claim the post only if it is still open, so two people tapping Claim at
+    // the same moment can't both get the shift.
+    const won = await dbWrite("PATCH", "giveup_requests", { match: { id, status: "open" }, patch: { status: "claimed", claimedBy: currentUser.id } });
+    if (!won) return;
+    if (!DEMO_MODE && (!won.data || won.data.length === 0)) {
+      setGiveups((prev) => prev.map((g) => (g.id === id ? { ...g, status: "claimed" } : g)));
+      toast(t("swapTaken"), "error");
+      return;
+    }
+
     setGiveups((prev) => prev.map((g) => (g.id === id ? { ...g, status: "claimed", claimedBy: currentUser.id } : g)));
-    setShifts((prev) => prev.map((s) => (s.id === giveup.shiftId ? { ...s, userId: currentUser.id } : s)));
-    await dbWrite("PATCH", "giveup_requests", { match: { id }, patch: { status: "claimed", claimedBy: currentUser.id } });
+    setShifts((prev) => prev.filter((s) => !(mine && s.id === mine.id)).map((s) => (s.id === giveup.shiftId ? { ...s, userId: currentUser.id } : s)));
     await dbWrite("PATCH", "shifts", { match: { id: giveup.shiftId }, patch: { userId: currentUser.id } });
+    if (mine) await dbWrite("DELETE", "shifts", { match: { id: mine.id } });
     await sendTelegram(`✅ <b>Shift claimed</b> by ${escapeHtml(currentUser.name)}`);
     toast(t("claimedShift"));
   };
@@ -2759,9 +3071,9 @@ function AppInner() {
             <ScheduleView currentUser={currentUser} shifts={shifts} users={users} showDays={showDays} doorsClose={doorsClose} />
           )}
           {activeTab === "availability" && (isAdmin ? (
-            <AvailabilityHub users={users} availability={availability} showDays={showDays} currentUser={currentUser} doorsClose={doorsClose} onSubmit={submitAvailability} />
+            <AvailabilityHub users={users} availability={availability} showDays={showDays} currentUser={currentUser} doorsClose={doorsClose} onSubmit={submitAvailability} standing={standing} onSaveStanding={saveStanding} />
           ) : (
-            <AvailabilityView currentUser={currentUser} showDays={showDays} doorsClose={doorsClose} availability={availability} onSubmit={submitAvailability} />
+            <AvailabilityView key={JSON.stringify(standing[currentUser.id] || {})} currentUser={currentUser} showDays={showDays} doorsClose={doorsClose} availability={availability} onSubmit={submitAvailability} standing={standing} onSaveStanding={saveStanding} />
           ))}
           {activeTab === "timeoff" && (
             <TimeOffView
@@ -2796,6 +3108,10 @@ function AppInner() {
               setDoorsClose={persistDoorsClose}
               availability={availability}
               timeOff={timeOff}
+              drafts={drafts}
+              setDrafts={setDrafts}
+              currentUser={currentUser}
+              standing={standing}
             />
           )}
           {activeTab === "showdays" && isAdmin && <ShowDaysCalendar showDays={showDays} onToggle={toggleShowDay} />}
@@ -2815,6 +3131,17 @@ function AppInner() {
 function normalizeUser(u) {
   return { id: u.id, name: u.name, pin: u.pin, phone: u.phone, depts: u.depts || [], isManager: u.is_manager ?? u.isManager ?? false, isOwner: u.is_owner ?? u.isOwner ?? false };
 }
+// Saved schedule drafts live in app_state under keys like "draft:2026-10-05"
+// (the Monday of that week), so every manager sees the same draft.
+const draftKey = (weekStart) => `draft:${toISODate(weekStart)}`;
+function draftsFromAppState(rows) {
+  const out = {};
+  for (const r of rows || []) {
+    if (typeof r.key === "string" && r.key.startsWith("draft:") && r.value && Array.isArray(r.value.shifts)) out[r.key] = r.value;
+  }
+  return out;
+}
+
 function normalizeShift(s) {
   return { id: s.id, date: s.date, deptId: s.dept_id ?? s.deptId, userId: s.user_id ?? s.userId, start: s.start_time ?? s.start, end: s.end_time ?? s.end, onCall: s.on_call ?? s.onCall ?? false };
 }
